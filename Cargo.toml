@@ -1,0 +1,11 @@
+[package]
+name = "kp-ssh-agent-rs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+keepass = "0.8.3"
+service-binding = "3.0.0"
+ssh-agent-lib = "0.5.1"
+tokio = { version = "1.45.0", features = ["full"] }
