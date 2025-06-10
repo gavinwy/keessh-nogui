@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[package.metadata.patch]
+crates = ["keepass"]
+
+[patch.crates-io]
+some-crate = { path="./target/patch/keepass-0.8.3" }
+
 [dependencies]
 keepass = "0.8.3"
 service-binding = "3.0.0"
