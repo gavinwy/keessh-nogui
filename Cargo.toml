@@ -8,7 +8,7 @@ publish = false
 crates = ["keepass"]
 
 [patch.crates-io]
-some-crate = { path="./target/patch/keepass-0.8.3" }
+keepass = { path="./target/patch/keepass-0.8.3" }
 
 [dependencies]
 keepass = "0.8.3"

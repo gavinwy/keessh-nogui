@@ -46,9 +46,10 @@ impl FromXml for Entry {
                         out.custom_data = CustomData::from_xml(iterator, inner_cipher)?;
                     }
                     "Binary" => {
-                        let _field = BinaryField::from_xml(iterator, inner_cipher)?;
+                        let field = BinaryField::from_xml(iterator, inner_cipher)?;
                         // TODO reference into a binary field from the Meta. Might only appear in
                         // kdbx3
+                        out.attachment_refs.insert(field.key, field.identifier.to_string());
                     }
                     "AutoType" => {
                         out.autotype = Some(AutoType::from_xml(iterator, inner_cipher)?);
