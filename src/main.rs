@@ -1,5 +1,5 @@
-// Copyright 2025 Gavin Weifert-Yeh
-// License TBD, for now all rights reserved.
+// SPDX-FileCopyrightText: Copyright 2025 Gavin Weifert-Yeh
+// SPDX-License-Identifier: Apache-2.0 OR BSD-2-Clause OR ISC OR MIT
 
 use anyhow::{anyhow, Context, Result};
 use num_traits::cast::FromPrimitive;
@@ -256,5 +256,4 @@ fn main() {
     for i in ssh_keys {
         client.add_identity(&i.private_key).expect("TODO: panic message");
     }
-
 }
