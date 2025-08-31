@@ -1,4 +1,5 @@
 # keessh-nogui
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11115/badge)](https://www.bestpractices.dev/projects/11115)
 ## Intro
 Provides a command line only tool for Unix-like systems to load SSH keys stored in
 [KeePass](https://keepass.info/) Database  files into an SSH agent. This might be useful for
