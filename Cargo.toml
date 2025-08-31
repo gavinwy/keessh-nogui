@@ -1,5 +1,5 @@
 [package]
-name = "kp-ssh-agent-rs"
+name = "keessh-nogui"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -11,7 +11,12 @@ crates = ["keepass"]
 keepass = { path="./target/patch/keepass-0.8.3" }
 
 [dependencies]
+anyhow = "1.0.99"
 keepass = "0.8.3"
-service-binding = "3.0.0"
-ssh-agent-lib = "0.5.1"
-tokio = { version = "1.45.0", features = ["full"] }
+serde = "1.0.219"
+serde-xml-rs = "0.8.1"
+serde_derive = "1.0.219"
+rpassword = "=7.4.0"
+ssh-agent-client-rs = "1.1.1"
+ssh-key = "=0.6.7"
+num-traits = "0.2.19"
