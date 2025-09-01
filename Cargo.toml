@@ -18,5 +18,7 @@ serde-xml-rs = "0.8.1"
 serde_derive = "1.0.219"
 rpassword = "=7.4.0"
 ssh-agent-client-rs = "1.1.1"
-ssh-key = "=0.6.7"
+ssh-key = { version = "=0.6.7",features = ["alloc", "rsa"] }
 num-traits = "0.2.19"
+clap = "4.5.46"
+num-bigint-dig = "0.8.4"

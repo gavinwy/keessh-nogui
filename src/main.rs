@@ -1,20 +1,18 @@
 // SPDX-FileCopyrightText: Copyright 2025 Gavin Weifert-Yeh
 // SPDX-License-Identifier: Apache-2.0 OR BSD-2-Clause OR ISC OR MIT
 
-use anyhow::{anyhow, Context, Result};
-use num_traits::cast::FromPrimitive;
-use keepass::{
-    db::NodeRef,
-    Database,
-    DatabaseKey,
-    error::DatabaseOpenError
+use crate::FileEncoding::{
+    ASCII, Binary, UTF_7, UTF_8, UTF_16_BE, UTF_16_LE, UTF_32_BE, UTF_32_LE,
 };
-use ssh_key::{PrivateKey, PublicKey};
-use ssh_agent_client_rs::Client;
+use anyhow::{Context, Result, anyhow, Error};
+use keepass::db::Entry;
+use keepass::{Database, DatabaseKey, db::NodeRef, error::DatabaseOpenError};
+use num_bigint_dig::BigUint;
+use num_traits::cast::FromPrimitive;
 use serde_derive::Deserialize;
 use serde_xml_rs::from_reader;
-use keepass::db::Entry;
-use crate::FileEncoding::{Binary, ASCII, UTF_7, UTF_8, UTF_16_BE, UTF_16_LE, UTF_32_BE, UTF_32_LE};
+use ssh_agent_client_rs::Client;
+use ssh_key::{Mpint, PrivateKey, PublicKey};
 use std::env;
 use std::path::Path;
 
@@ -37,7 +35,7 @@ struct KASetLocation {
     SelectedType: String,
     AttachmentName: String,
     SaveAttachmentToTempFile: bool,
-    FileName: String
+    FileName: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -49,9 +47,9 @@ struct KeeagentSettings {
     UseConfirmConstraintWhenAdding: bool,
     UseLifetimeConstraintWhenAdding: bool,
     LifetimeConstraintDuration: i64,
-    UseDestinationConstraintWhenAdding: Option<bool>,  // Optional or missing on KXC
+    UseDestinationConstraintWhenAdding: Option<bool>, // Optional or missing on KXC
     DestinationConstraints: Option<String>,           // Optional or missing on KXC
-    Location: KASetLocation
+    Location: KASetLocation,
 }
 
 #[derive(Debug)]
@@ -63,17 +61,24 @@ struct SshKey {
 
 impl SshKey {
     fn from_entry(e: &Entry, db: &Database) -> Result<Self> {
-        let settings_location = & e.attachment_refs["KeeAgent.settings"];
-        let attachment = get_attachment_content(db, usize::from_u8((*settings_location).parse().unwrap()).unwrap()); // TODO Has to be a better way to do this
-        let settings: KeeagentSettings = parse_settings(attachment).context("failed to parse KeeAgent settings")?;
+        let settings_location = &e.attachment_refs["KeeAgent.settings"];
+        let attachment = get_attachment_content(
+            db,
+            usize::from_u8((*settings_location).parse().unwrap()).unwrap(),
+        ); // TODO Has to be a better way to do this
+        let settings: KeeagentSettings =
+            parse_settings(attachment).context("failed to parse KeeAgent settings")?;
 
         let private_key_location = &e.attachment_refs[&settings.Location.AttachmentName];
-        let private_key_file = get_attachment_content(db, usize::from_u8((*private_key_location).parse().unwrap()).unwrap());
-        let private_key = PrivateKey::from_openssh(&private_key_file).context("failed to load private key from attachment.")?;
+        let private_key_file = get_attachment_content(
+            db,
+            usize::from_u8((*private_key_location).parse().unwrap()).unwrap(),
+        );
+        let private_key = PrivateKey::from_openssh(&private_key_file)
+            .context("failed to load private key from attachment.")?;
         let public_key = private_key.public_key();
 
-        Ok(
-            Self {
+        Ok(Self {
             private_key: private_key.clone(),
             public_key: public_key.clone(),
             settings,
@@ -81,10 +86,28 @@ impl SshKey {
     }
 }
 
-fn open_kpdb(key: DatabaseKey, db_file_location: String) -> Result<Database> {
-    let mut db_file = std::fs::File::open(db_file_location)?;
-    let db =Database::open(&mut db_file, key)?;
-    Ok(db)
+fn get_keys_from_db(db: &Database) -> Vec<SshKey> {
+    // For input database, iterates over all entries, finds those that have SSH keys attached
+    // and returns them.
+
+    let mut ssh_keys = Vec::<SshKey>::new();
+    for node in &db.root {
+        match node {
+            NodeRef::Group(_g) => {}
+            NodeRef::Entry(e) => {
+                if e.attachment_refs.contains_key("KeeAgent.settings") {
+                    let key: Result<SshKey> = SshKey::from_entry(e, db);
+                    if key.is_err() {
+                        eprintln!("key couldn't be loaded. {:?}", key);
+                        continue;
+                    } else {
+                        ssh_keys.push(key.unwrap()); // if statement means shouldn't panic.
+                    }
+                }
+            }
+        }
+    }
+    ssh_keys
 }
 
 fn get_attachment_content(db: &Database, index: usize) -> &Vec<u8> {
@@ -130,7 +153,9 @@ fn get_encoding(bytes: &Vec<u8>) -> FileEncoding {
     */
 
     // IMPORTANT GUARD ++++++++++++++++++++
-    if bytes.len() < 4 { return Binary } // Prevents BOM check from panicking
+    if bytes.len() < 4 {
+        return Binary;
+    } // Prevents BOM check from panicking
     // IMPORTANT GUARD ++++++++++++++++++++
 
     // The above guard should make this unwrap() never panic.
@@ -149,56 +174,111 @@ fn get_encoding(bytes: &Vec<u8>) -> FileEncoding {
 
     let patterns: Vec<(FileEncoding, Vec<u8>)> = vec![
         (UTF_8, vec![0x3C, 0x3F, 0x78, 0x6D, 0x6C]),
-        (UTF_8, vec![0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x20, 0x42, 0x45, 0x47, 0x49, 0x4E]),
-        (UTF_16_LE, vec![0x3C, 0x00, 0x3F, 0x00, 0x78, 0x00, 0x6D, 0x00, 0x6C, 0x00]),
-        (UTF_16_LE, vec![
-            0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00,
-            0x20, 0x00, 0x42, 0x00, 0x45, 0x00, 0x47, 0x00, 0x49, 0x00,
-            0x4E, 0x00,
-        ]),
-        (UTF_16_BE, vec![0x00, 0x3C, 0x00, 0x3F, 0x00, 0x78, 0x00, 0x6D, 0x00, 0x6C]),
-        (UTF_16_BE, vec![
-            0x00, 0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00,
-            0x20, 0x00, 0x42, 0x00, 0x45, 0x00, 0x47, 0x00, 0x49, 0x00,
-            0x4E,
-        ]),
-        (UTF_32_LE, vec![
-            0x3C, 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00,
-            0x78, 0x00, 0x00, 0x00, 0x6D, 0x00, 0x00, 0x00,
-            0x6C, 0x00, 0x00, 0x00,
-        ]),
-        (UTF_32_LE, vec![
-            0x2D, 0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00,
-            0x2D, 0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00,
-            0x2D, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
-            0x42, 0x00, 0x00, 0x00, 0x45, 0x00, 0x00, 0x00,
-            0x47, 0x00, 0x00, 0x00, 0x49, 0x00, 0x00, 0x00,
-            0x4E, 0x00, 0x00, 0x00,
-        ]),
-        (UTF_32_BE, vec![
-            0x00, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0x3F,
-            0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x6D,
-            0x00, 0x00, 0x00, 0x6C,
-        ]),
-        (UTF_32_BE, vec![
-            0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x2D,
-            0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x2D,
-            0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x20,
-            0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x00, 0x45,
-            0x00, 0x00, 0x00, 0x47, 0x00, 0x00, 0x00, 0x49,
-            0x00, 0x00, 0x00, 0x4E,
-        ]),
+        (
+            UTF_8,
+            vec![
+                0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x20, 0x42, 0x45, 0x47, 0x49, 0x4E,
+            ],
+        ),
+        (
+            UTF_16_LE,
+            vec![0x3C, 0x00, 0x3F, 0x00, 0x78, 0x00, 0x6D, 0x00, 0x6C, 0x00],
+        ),
+        (
+            UTF_16_LE,
+            vec![
+                0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00, 0x20, 0x00, 0x42, 0x00,
+                0x45, 0x00, 0x47, 0x00, 0x49, 0x00, 0x4E, 0x00,
+            ],
+        ),
+        (
+            UTF_16_BE,
+            vec![0x00, 0x3C, 0x00, 0x3F, 0x00, 0x78, 0x00, 0x6D, 0x00, 0x6C],
+        ),
+        (
+            UTF_16_BE,
+            vec![
+                0x00, 0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00, 0x2D, 0x00, 0x20, 0x00, 0x42, 0x00, 0x45,
+                0x00, 0x47, 0x00, 0x49, 0x00, 0x4E,
+            ],
+        ),
+        (
+            UTF_32_LE,
+            vec![
+                0x3C, 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x6D, 0x00,
+                0x00, 0x00, 0x6C, 0x00, 0x00, 0x00,
+            ],
+        ),
+        (
+            UTF_32_LE,
+            vec![
+                0x2D, 0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x2D, 0x00,
+                0x00, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x00,
+                0x45, 0x00, 0x00, 0x00, 0x47, 0x00, 0x00, 0x00, 0x49, 0x00, 0x00, 0x00, 0x4E, 0x00,
+                0x00, 0x00,
+            ],
+        ),
+        (
+            UTF_32_BE,
+            vec![
+                0x00, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00,
+                0x00, 0x6D, 0x00, 0x00, 0x00, 0x6C,
+            ],
+        ),
+        (
+            UTF_32_BE,
+            vec![
+                0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x2D, 0x00, 0x00,
+                0x00, 0x2D, 0x00, 0x00, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x42,
+                0x00, 0x00, 0x00, 0x45, 0x00, 0x00, 0x00, 0x47, 0x00, 0x00, 0x00, 0x49, 0x00, 0x00,
+                0x00, 0x4E,
+            ],
+        ),
     ];
     'pattern: for pattern in patterns {
         if bytes.len() < pattern.1.len() {
-            continue 'pattern;  // Prevent trying to compare past the end of bytes if the pattern is longer.
+            continue 'pattern; // Prevent trying to compare past end of bytes if pattern is longer.
         }
         for i in 0..pattern.1.len() {
-            if bytes[i] != pattern.1[i] {continue 'pattern;}
+            if bytes[i] != pattern.1[i] {
+                continue 'pattern;
+            }
         }
         return pattern.0;
     }
     Binary
+}
+
+fn key_check_old_crypto(ssh_key: &SshKey) -> Result<()> {
+    // Returns unit if key is using crypto considered acceptable. Otherwise, returns an Error.
+
+    // Checks SSH key for crypto considered deprecated/insecure so user can be warned.
+    // This is an Open SSF Best Practice: see https://bestpractices.dev
+    let min_rsa_key_length: usize = 2048;
+        if ssh_key.public_key.algorithm().is_dsa() {
+            return Err(anyhow!(
+            "DSA keys are deprecated and considered insecure. Please consider upgrading."
+        ))}
+        if ssh_key.public_key.algorithm().is_rsa() {
+            // Gets Modulus of public key. The length of the modulus is the same as the key itself.
+            // This should never panic because the match statement ensures key is RSA.
+            let key_mod: &Mpint = &ssh_key.public_key.key_data().rsa().unwrap().n;
+
+            // This shouldn't conceivably fail because TryFrom<Mpint> for BigUint
+            // is implemented for ssh_key::Mpint
+            let key_mod_len: usize = BigUint::try_from(key_mod)?.bits();
+            if key_mod_len < min_rsa_key_length {
+                 return Err(anyhow!("RSA keys smaller than 2048 bits are deprecated ".to_owned()
+                     + "and considered insecure. Please consider upgrading."))
+            };
+        }
+    Ok(())
+}
+
+fn open_kpdb(key: DatabaseKey, db_file_location: String) -> Result<Database> {
+    let mut db_file = std::fs::File::open(db_file_location)?;
+    let db = Database::open(&mut db_file, key)?;
+    Ok(db)
 }
 
 fn parse_settings(settings_file: &Vec<u8>) -> Result<KeeagentSettings> {
@@ -219,41 +299,19 @@ fn parse_settings(settings_file: &Vec<u8>) -> Result<KeeagentSettings> {
     Ok(settings)
 }
 
-fn get_keys_from_db(db: &Database) -> Vec<SshKey> {
-    // For input database, iterates over all entries, finds those that have SSH keys attached
-    // and returns them.
-
-    let mut ssh_keys = Vec::<SshKey>::new();
-    for node in &db.root {
-        match node {
-            NodeRef::Group(_g) => {}
-            NodeRef::Entry(e) => {
-                if e.attachment_refs.contains_key("KeeAgent.settings") {
-                    let key: Result<SshKey> = SshKey::from_entry(e, db);
-                    if key.is_err() {
-                        eprintln!("key couldn't be loaded. {:?}", key);
-                        continue
-                    }
-                    else {
-                        ssh_keys.push(key.unwrap());  // if key was Err, we never get here, because conditional.
-                    }
-                }
-            }
-        }
-    }
-    ssh_keys
-}
-
 fn main() {
     let cli_args: Vec<String> = env::args().collect();
     let db_path = &cli_args[1];
-    let db_password = rpassword::prompt_password(format!("password for {}: ",db_path).as_str()).unwrap();
+    let db_password =
+        rpassword::prompt_password(format!("password for {}: ", db_path).as_str()).unwrap();
     let key = DatabaseKey::new().with_password(&*db_password);
-    let db = open_kpdb(key,String::from(db_path)).unwrap();
+    let db = open_kpdb(key, String::from(db_path)).unwrap();
     let ssh_keys = get_keys_from_db(&db);
     let socket = env::var("SSH_AUTH_SOCK").unwrap();
     let mut client = Client::connect(Path::new(socket.as_str())).unwrap();
     for i in ssh_keys {
-        client.add_identity(&i.private_key).expect("TODO: panic message");
+        client
+            .add_identity(&i.private_key)
+            .expect("TODO: panic message");
     }
 }
