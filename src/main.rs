@@ -4,7 +4,7 @@
 use crate::FileEncoding::{
     ASCII, Binary, UTF_7, UTF_8, UTF_16_BE, UTF_16_LE, UTF_32_BE, UTF_32_LE,
 };
-use anyhow::{Context, Result, anyhow, Error};
+use anyhow::{Context, Result, anyhow};
 use keepass::db::Entry;
 use keepass::{Database, DatabaseKey, db::NodeRef, error::DatabaseOpenError};
 use num_bigint_dig::BigUint;
@@ -13,8 +13,15 @@ use serde_derive::Deserialize;
 use serde_xml_rs::from_reader;
 use ssh_agent_client_rs::Client;
 use ssh_key::{Mpint, PrivateKey, PublicKey};
-use std::env;
-use std::path::Path;
+use std::{env, u32};
+use std::collections::HashMap;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use clap::{Parser, crate_version};
+
+const AUTO_OPEN_MAX_DEPTH: u32 = 8;
+const AUTO_OPEN_MAX_WIDTH: u32 = 10;
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq)]
@@ -27,6 +34,31 @@ enum FileEncoding {
     UTF_16_BE,
     UTF_32_LE,
     UTF_32_BE,
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "keessh")]
+#[command(version = crate_version!())]
+#[command(about =
+    "CLI only ssh-agent client using KeePass files. Compatible with KeeAgent and KeepassXC keys."
+)]
+#[command(arg_required_else_help = true)]
+struct Cli {
+    #[arg(group = "auto-open", long, default_value = "false")]
+    no_auto_open: bool,
+
+    #[arg(
+        group = "strict-crypto",
+        long = "use-strict-crypto",
+        alias = "strict",
+        help = "refuse to use insecure keys, rather than just warn.",
+    )]
+    strict_crypto: bool,
+
+    #[arg(group = "strict-crypto", long = "suppress-crypto-warnings", default_value = "false")]
+    suppress_crypto_warnings: bool,
+
+    vault_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -53,6 +85,51 @@ struct KeeagentSettings {
 }
 
 #[derive(Debug)]
+struct KeesshSettings {
+    auto_open_recursion_enable: bool,
+    strict_crypto_enabled: bool,
+    suppress_crypto_warnings: bool,
+    vault_location_preset: Option<String>,
+
+}
+
+impl Default for KeesshSettings {
+    fn default() -> Self {
+        KeesshSettings {
+            auto_open_recursion_enable: true,
+            strict_crypto_enabled: false,
+            suppress_crypto_warnings: false,
+            vault_location_preset: None,
+        }
+    }
+}
+
+impl KeesshSettings {
+    fn new() -> Self {
+        let mut s = KeesshSettings::default();
+        if env::var("KEESSH_AUTO_OPEN").is_ok() {
+            if is_falsey(env::var("KEESSH_AUTO_OPEN").unwrap()) {
+                s.auto_open_recursion_enable = false;
+            }
+        }
+        if env::var("KEESSH_STRICT_CRYPTO").is_ok() {
+            if ! is_falsey(env::var("KEESSH_STRICT_CRYPTO").unwrap()) {
+                s.strict_crypto_enabled = true;
+            }
+        }
+        if env::var("KEESSH_NO_CRYPTO_WARNINGS").is_ok() {
+            s.suppress_crypto_warnings = true;
+        }
+        if env::var("KEESSH_VAULT").is_ok() {
+            if Path::exists(env::var("KEESSH_VAULT").unwrap().as_ref()) {
+                s.vault_location_preset = Some(env::var("KEESSH_VAULT").unwrap());
+            }
+        }
+    s
+    }
+}
+
+#[derive(Debug)]
 struct SshKey {
     private_key: PrivateKey,
     public_key: PublicKey,
@@ -60,6 +137,7 @@ struct SshKey {
 }
 
 impl SshKey {
+    // TODO could this be more idiomatic with TryFrom?
     fn from_entry(e: &Entry, db: &Database) -> Result<Self> {
         let settings_location = &e.attachment_refs["KeeAgent.settings"];
         let attachment = get_attachment_content(
@@ -67,7 +145,7 @@ impl SshKey {
             usize::from_u8((*settings_location).parse().unwrap()).unwrap(),
         ); // TODO Has to be a better way to do this
         let settings: KeeagentSettings =
-            parse_settings(attachment).context("failed to parse KeeAgent settings")?;
+            parse_keeagent_settings(attachment).context("failed to parse KeeAgent settings")?;
 
         let private_key_location = &e.attachment_refs[&settings.Location.AttachmentName];
         let private_key_file = get_attachment_content(
@@ -84,6 +162,76 @@ impl SshKey {
             settings,
         })
     }
+}
+
+fn is_falsey(s: String) -> bool {
+    // For reading env vars, can't get truthy/falsey from clap, so do this.
+    // TODO probably a better way to do this, maybe with a library
+    if i32::from_str(&s).is_ok() { if i32::from_str(&s).unwrap() == 0 {return true}}
+    if s.to_ascii_lowercase() == "false" {return true}
+    if s.to_ascii_lowercase() == "no" {return true}
+    false
+}
+
+fn get_auto_open_dbs(db: &Database) -> Result<HashMap<PathBuf, DatabaseKey>> {
+    // Warning: Here be Dragons (recursion). TODO This can probably be done much better.
+    //
+    // The KeePass Extension KeeAutoExec, and KeePassXC support automatically opening databases
+    // after a main database is opened. These sub databases must be directly under a group named
+    // "AutoOpen" that is directly under the root of the vault. Those databases are specified as
+    // entries, with the URL referring to the database file location, and the password referring
+    // to the password for the database. keessh also supports this, and it's implemented here.
+    //
+    // There's a maximum depth and a maximum breadth for the recursion so it shouldn't be possible
+    // to hose yourself with this too badly, and if you do, you'll probably notice you're hosed
+    // sooner with KeeAutoExec or KeePassXC. Hopefully this will also prevent any bugs from causing
+    // problems, but it's possible.
+    //
+    // I doubt any actual problems will come of this, AutoOpen is rare and anyone using it
+    // recursively should already know what can happen.
+
+    let mut new_dbs:HashMap<PathBuf, DatabaseKey> = HashMap::new();
+    let mut duplicate_dbs: Vec<PathBuf> = Vec::new();
+    if db.root.get(&["AutoOpen"]).is_none() {
+        return Ok(new_dbs);
+    }
+    let auto_open_group_children = match db.root.get(&["AutoOpen"]).unwrap() {
+        NodeRef::Entry(e) => { return Ok(new_dbs) } // If AutoOpen isn't a group, return.
+        NodeRef::Group(g) => {
+            &g.children
+        }
+    };
+
+    // This section should prevent the same database opening multiple times.
+    for child in auto_open_group_children {
+        let child_node = get_sub_db(NodeRef::from(child));
+        if child_node.is_ok() {
+            let child_entry = child_node?;
+
+            // Check if child_entry is already considered a duplicate.
+            for db_pathbuf in &duplicate_dbs {
+                if child_entry.contains_key(db_pathbuf) {
+                    anyhow!("Same database can't be auto-opened more than once.");
+                }
+            }
+
+            // If child_entry is a duplicate, put it in list of duplicates.
+            for db_pathbuf in &new_dbs {
+                if child_entry.contains_key(db_pathbuf.0.deref()) {
+                    duplicate_dbs.push(PathBuf::from(db_pathbuf.0.deref()));
+                }
+            }
+
+            // Finally, if child_entry is in list of duplicates and is in new_dbs, remove from new_dbs.
+            for db_pathbuf in &duplicate_dbs {
+                if new_dbs.contains_key(db_pathbuf) {
+                    new_dbs.remove(db_pathbuf);
+                }
+            }
+        }
+    }
+
+    Ok(new_dbs)
 }
 
 fn get_keys_from_db(db: &Database) -> Vec<SshKey> {
@@ -249,6 +397,18 @@ fn get_encoding(bytes: &Vec<u8>) -> FileEncoding {
     Binary
 }
 
+fn get_sub_db(child: NodeRef) -> Result<HashMap<PathBuf, DatabaseKey>> {
+    match child {
+        NodeRef::Group(_) => {Err(anyhow!("child is group."))}
+        NodeRef::Entry(e) => {
+            let pb = PathBuf::from(e.get_url().unwrap()).canonicalize()?;
+            let dbk = DatabaseKey::new().with_password(e.get_password().unwrap());
+
+            Ok(HashMap::from([(pb, dbk)]))
+        }
+    }
+}
+
 fn key_check_old_crypto(ssh_key: &SshKey) -> Result<()> {
     // Returns unit if key is using crypto considered acceptable. Otherwise, returns an Error.
 
@@ -275,13 +435,13 @@ fn key_check_old_crypto(ssh_key: &SshKey) -> Result<()> {
     Ok(())
 }
 
-fn open_kpdb(key: DatabaseKey, db_file_location: String) -> Result<Database> {
+fn open_kpdb(key: DatabaseKey, db_file_location: PathBuf) -> Result<Database> {
     let mut db_file = std::fs::File::open(db_file_location)?;
     let db = Database::open(&mut db_file, key)?;
     Ok(db)
 }
 
-fn parse_settings(settings_file: &Vec<u8>) -> Result<KeeagentSettings> {
+fn parse_keeagent_settings(settings_file: &Vec<u8>) -> Result<KeeagentSettings> {
     // Takes a Vec<u8> containing a raw attachment and attempt to parse it as a KeeAgent.settings
     // file, which is a non-compliant XML file, declared as UTF-16 but lacking a BOM.
     // The XML parser in serde_xml_rs won't accept that, so manually add a BOM here.
@@ -299,17 +459,47 @@ fn parse_settings(settings_file: &Vec<u8>) -> Result<KeeagentSettings> {
     Ok(settings)
 }
 
-fn main() {
-    let cli_args: Vec<String> = env::args().collect();
-    let db_path = &cli_args[1];
+fn main () {
+    // Parse CLI arguments.
+    let cli = Cli::parse();
+
+    println!("{:#?}", cli);
+
+    // Load hard-coded default settings and change them if set by user.
+    // CLI argument overrides environment variable, which in turn overrides defaults.
+    let mut keesh_settings = KeesshSettings::new();
+    if cli.no_auto_open == true {
+        keesh_settings.auto_open_recursion_enable = false;
+    }
+    if cli.strict_crypto == true {
+        keesh_settings.strict_crypto_enabled = true;
+    }
+    if cli.suppress_crypto_warnings == true {
+        keesh_settings.suppress_crypto_warnings = true;
+    }
+
+    let db_path = PathBuf::new();
+    if cli.vault_path.is_some() {
+        let db_path = cli.vault_path.unwrap();
+    } else {
+        let db_path = PathBuf::from(keesh_settings.vault_location_preset.unwrap());
+    }
     let db_password =
-        rpassword::prompt_password(format!("password for {}: ", db_path).as_str()).unwrap();
-    let key = DatabaseKey::new().with_password(&*db_password);
-    let db = open_kpdb(key, String::from(db_path)).unwrap();
+        rpassword::prompt_password(format!("password for {:?}: ", db_path).as_str()).unwrap();
+    let key = DatabaseKey::new().with_password(&db_password);
+    let db = open_kpdb(key, db_path).unwrap();
     let ssh_keys = get_keys_from_db(&db);
     let socket = env::var("SSH_AUTH_SOCK").unwrap();
     let mut client = Client::connect(Path::new(socket.as_str())).unwrap();
     for i in ssh_keys {
+        let crypto_check = key_check_old_crypto(&i);
+        if crypto_check.is_err() {
+            println!("{}",crypto_check.unwrap_err());
+            if keesh_settings.strict_crypto_enabled {
+                println!("not loading key due to strict-crypto being set.");
+                continue
+            }
+        }
         client
             .add_identity(&i.private_key)
             .expect("TODO: panic message");
