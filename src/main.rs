@@ -463,8 +463,6 @@ fn main () {
     // Parse CLI arguments.
     let cli = Cli::parse();
 
-    println!("{:#?}", cli);
-
     // Load hard-coded default settings and change them if set by user.
     // CLI argument overrides environment variable, which in turn overrides defaults.
     let mut keesh_settings = KeesshSettings::new();
