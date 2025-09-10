@@ -517,3 +517,258 @@ fn main() {
             .expect("TODO: panic message");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keepass::db::Node;
+
+    fn get_settings_encoding_test_files() -> HashMap<String, Vec<u8>> {
+        let key = DatabaseKey::new().with_password("password");
+        let path = PathBuf::from("tests/wrong_settings_encoding.kdbx");
+        let db = open_kpdb(key, path).unwrap();
+        let entry: Entry = match db.root.children.first().unwrap().clone() {
+            Node::Group(_) => unimplemented!("Test db, we know its contents and can assume"),
+            Node::Entry(e) => e,
+        };
+        let mut encoding_test_files: HashMap<String, Vec<u8>> = HashMap::new();
+        for i in entry.attachment_refs {
+            encoding_test_files.insert(
+                i.0,
+                get_attachment_content(&db, i.1.parse::<usize>().unwrap()).clone(),
+            );
+        }
+        encoding_test_files
+    }
+
+    fn get_privkey_encoding_test_files() -> HashMap<String, Vec<u8>> {
+        let key = DatabaseKey::new().with_password("password");
+        let path = PathBuf::from("tests/wrong_privkey_encoding.kdbx");
+        let db = open_kpdb(key, path).unwrap();
+        let entry: Entry = match db.root.children.first().unwrap().clone() {
+            Node::Group(_) => unimplemented!("Test db, we know its contents and can assume"),
+            Node::Entry(e) => e,
+        };
+        let mut privkey_test_files: HashMap<String, Vec<u8>> = HashMap::new();
+        for i in entry.attachment_refs {
+            privkey_test_files.insert(
+                i.0,
+                get_attachment_content(&db, i.1.parse::<usize>().unwrap()).clone(),
+            );
+        }
+        privkey_test_files
+    }
+
+    #[test]
+    fn open_blank_kdbx() {
+        let key = DatabaseKey::new().with_password("password");
+        let path = PathBuf::from("tests/test0.kdbx");
+        open_kpdb(key, path).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Incorrect key")]
+    fn open_kdbx_wrong_password() {
+        let key = DatabaseKey::new().with_password("WRONG");
+        let path = PathBuf::from("tests/test0.kdbx");
+        open_kpdb(key, path).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid KDBX identifier")]
+    fn open_kdbx_not_a_kdbx() {
+        let key = DatabaseKey::new().with_password("password");
+        let path = PathBuf::from("README.md");
+        open_kpdb(key, path).unwrap();
+    }
+
+    #[test]
+    fn get_encoding_test() {
+        let files = get_settings_encoding_test_files();
+        // files should contain: // TODO FIX THESE FILES TO BE CONSISTENTLY NAMED
+        // TODO ADD FILES IN OTHER ENCODINGS
+        // KeeAgent.settings (UTF-16 LE NO BOM)
+        // * iso-8859-1.settings NOT TESTED
+        // * utf-16.settings
+        // * utf16-be-bom.settings
+        // * utf16-le-bom.settings
+        // * utf-32.settings
+        // * utf-32-be-bom.settings
+        // * utf-32-le-bom.settings
+        // * utf8.settings
+        // * windows-1252.settings NOT TESTED
+
+        assert_eq!(get_encoding(&files["utf-16.settings"]), UTF_16_LE);
+        assert_eq!(get_encoding(&files["utf16-be-bom.settings"]), UTF_16_BE);
+        assert_eq!(get_encoding(&files["utf16-le-bom.settings"]), UTF_16_LE);
+        assert_eq!(get_encoding(&files["utf-32.settings"]), UTF_32_LE);
+        assert_eq!(get_encoding(&files["utf-32-be.settings"]), UTF_32_BE);
+        assert_eq!(get_encoding(&files["utf-32-le.settings"]), UTF_32_LE);
+        assert_eq!(get_encoding(&files["utf8.settings"]), UTF_8);
+    }
+
+    #[test]
+    fn parse_keeagent_settings_test() {
+        let files = get_settings_encoding_test_files();
+        assert_eq!(
+                parse_keeagent_settings(&files["KeeAgent.settings"]).unwrap(),
+                KeeagentSettings {
+                    AllowUseOfSshKey: false,
+                    AddAtDatabaseOpen: false,
+                    RemoveAtDatabaseClose: false,
+                    UseConfirmConstraintWhenAdding: false,
+                    UseLifetimeConstraintWhenAdding: false,
+                    LifetimeConstraintDuration: 0,
+                    UseDestinationConstraintWhenAdding: None,
+                    DestinationConstraints: None,
+                    Location: KASetLocation {
+                        SelectedType: "attachment".parse().unwrap(),
+                        AttachmentName: "".parse().unwrap(),
+                        SaveAttachmentToTempFile: false,
+                        FileName: "".parse().unwrap()
+                    }
+                }
+            );
+    }
+
+    #[test]
+    #[should_panic(expected = "Unknown or unsupported encoding")]
+    fn parse_settings_wrong_encoding2() {
+        let files = get_settings_encoding_test_files();
+        parse_keeagent_settings(&files["utf-32.settings"]).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "DSA keys are deprecated and considered insecure. Please consider upgrading.")]
+    fn test_crypto_check_dsa()  {
+        let key_str = std::fs::read_to_string("tests/test_dsa").unwrap();
+
+        let private_key = PrivateKey::from_openssh(key_str).unwrap();
+        let public_key = private_key.public_key().clone();
+
+        let settings = KeeagentSettings {
+            AllowUseOfSshKey: false,
+            AddAtDatabaseOpen: false,
+            RemoveAtDatabaseClose: false,
+            UseConfirmConstraintWhenAdding: false,
+            UseLifetimeConstraintWhenAdding: false,
+            LifetimeConstraintDuration: 0,
+            UseDestinationConstraintWhenAdding: None,
+            DestinationConstraints: None,
+            Location: KASetLocation {
+                SelectedType: "attachment".parse().unwrap(),
+                AttachmentName: "".parse().unwrap(),
+                SaveAttachmentToTempFile: false,
+                FileName: "".parse().unwrap(),
+            }
+        };
+
+        let key_struct = SshKey {
+            private_key,
+            public_key,
+            settings,
+        };
+
+        key_check_old_crypto(&key_struct).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "RSA keys smaller than 2048 bits are deprecated and considered insecure. Please consider upgrading.")]
+    fn test_crypto_check_rsa_2047() {
+        let key_str = std::fs::read_to_string("tests/test_2047_rsa").unwrap();
+
+        let private_key = PrivateKey::from_openssh(key_str).unwrap();
+        let public_key = private_key.public_key().clone();
+
+        let settings = KeeagentSettings {
+            AllowUseOfSshKey: false,
+            AddAtDatabaseOpen: false,
+            RemoveAtDatabaseClose: false,
+            UseConfirmConstraintWhenAdding: false,
+            UseLifetimeConstraintWhenAdding: false,
+            LifetimeConstraintDuration: 0,
+            UseDestinationConstraintWhenAdding: None,
+            DestinationConstraints: None,
+            Location: KASetLocation {
+                SelectedType: "attachment".parse().unwrap(),
+                AttachmentName: "".parse().unwrap(),
+                SaveAttachmentToTempFile: false,
+                FileName: "".parse().unwrap(),
+            }
+        };
+
+        let key_struct = SshKey {
+            private_key,
+            public_key,
+            settings,
+        };
+
+        key_check_old_crypto(&key_struct).unwrap();
+    }
+
+    #[test]
+    fn test_crypto_check_rsa_2048() {
+        let key_str = std::fs::read_to_string("tests/test_2048_rsa").unwrap();
+
+        let private_key = PrivateKey::from_openssh(key_str).unwrap();
+        let public_key = private_key.public_key().clone();
+
+        let settings = KeeagentSettings {
+            AllowUseOfSshKey: false,
+            AddAtDatabaseOpen: false,
+            RemoveAtDatabaseClose: false,
+            UseConfirmConstraintWhenAdding: false,
+            UseLifetimeConstraintWhenAdding: false,
+            LifetimeConstraintDuration: 0,
+            UseDestinationConstraintWhenAdding: None,
+            DestinationConstraints: None,
+            Location: KASetLocation {
+                SelectedType: "attachment".parse().unwrap(),
+                AttachmentName: "".parse().unwrap(),
+                SaveAttachmentToTempFile: false,
+                FileName: "".parse().unwrap(),
+            }
+        };
+
+        let key_struct = SshKey {
+            private_key,
+            public_key,
+            settings,
+        };
+
+        key_check_old_crypto(&key_struct).unwrap();
+    }
+
+    #[test]
+    fn test_crypto_check_rsa_2049() {
+        let key_str = std::fs::read_to_string("tests/test_2049_rsa").unwrap();
+
+        let private_key = PrivateKey::from_openssh(key_str).unwrap();
+        let public_key = private_key.public_key().clone();
+
+        let settings = KeeagentSettings {
+            AllowUseOfSshKey: false,
+            AddAtDatabaseOpen: false,
+            RemoveAtDatabaseClose: false,
+            UseConfirmConstraintWhenAdding: false,
+            UseLifetimeConstraintWhenAdding: false,
+            LifetimeConstraintDuration: 0,
+            UseDestinationConstraintWhenAdding: None,
+            DestinationConstraints: None,
+            Location: KASetLocation {
+                SelectedType: "attachment".parse().unwrap(),
+                AttachmentName: "".parse().unwrap(),
+                SaveAttachmentToTempFile: false,
+                FileName: "".parse().unwrap(),
+            }
+        };
+
+        let key_struct = SshKey {
+            private_key,
+            public_key,
+            settings,
+        };
+
+        key_check_old_crypto(&key_struct).unwrap();
+    }
+}
