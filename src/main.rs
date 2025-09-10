@@ -2,23 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0 OR BSD-2-Clause OR ISC OR MIT
 
 use crate::FileEncoding::{
-    ASCII, Binary, UTF_7, UTF_8, UTF_16_BE, UTF_16_LE, UTF_32_BE, UTF_32_LE,
+    Binary, UTF_16_BE, UTF_16_LE, UTF_32_BE, UTF_32_LE, UTF_7, UTF_8,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
+use clap::{crate_version, Parser};
 use keepass::db::Entry;
-use keepass::{Database, DatabaseKey, db::NodeRef, error::DatabaseOpenError};
+use keepass::{db::NodeRef, error::DatabaseOpenError, Database, DatabaseKey};
 use num_bigint_dig::BigUint;
 use num_traits::cast::FromPrimitive;
 use serde_derive::Deserialize;
 use serde_xml_rs::from_reader;
 use ssh_agent_client_rs::Client;
 use ssh_key::{Mpint, PrivateKey, PublicKey};
-use std::{env, u32};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use clap::{Parser, crate_version};
+use std::{env, u32};
 
 const AUTO_OPEN_MAX_DEPTH: u32 = 8;
 const AUTO_OPEN_MAX_WIDTH: u32 = 10;
@@ -27,7 +27,6 @@ const AUTO_OPEN_MAX_WIDTH: u32 = 10;
 #[derive(Debug, PartialEq)]
 enum FileEncoding {
     Binary,
-    ASCII,
     UTF_7,
     UTF_8,
     UTF_16_LE,
@@ -39,8 +38,8 @@ enum FileEncoding {
 #[derive(Parser, Debug)]
 #[command(name = "keessh")]
 #[command(version = crate_version!())]
-#[command(about =
-    "CLI only ssh-agent client using KeePass files. Compatible with KeeAgent and KeepassXC keys."
+#[command(
+    about = "CLI only ssh-agent client using KeePass files. Compatible with KeeAgent and KeepassXC keys."
 )]
 #[command(arg_required_else_help = true)]
 struct Cli {
@@ -51,17 +50,22 @@ struct Cli {
         group = "strict-crypto",
         long = "use-strict-crypto",
         alias = "strict",
-        help = "refuse to use insecure keys, rather than just warn.",
+        help = "refuse to use insecure keys, rather than just warn."
     )]
     strict_crypto: bool,
 
-    #[arg(group = "strict-crypto", long = "suppress-crypto-warnings", default_value = "false")]
+    #[arg(
+        group = "strict-crypto",
+        long = "suppress-crypto-warnings",
+        default_value = "false"
+    )]
     suppress_crypto_warnings: bool,
 
     vault_path: Option<PathBuf>,
 }
 
-#[derive(Deserialize, Debug)]
+// TODO change Strings to &str so this can be const for tests
+#[derive(Deserialize, Debug, Eq, PartialEq)]
 #[allow(non_snake_case)]
 struct KASetLocation {
     SelectedType: String,
@@ -70,7 +74,7 @@ struct KASetLocation {
     FileName: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Eq, PartialEq)]
 #[allow(non_snake_case)]
 struct KeeagentSettings {
     AllowUseOfSshKey: bool,
@@ -84,13 +88,12 @@ struct KeeagentSettings {
     Location: KASetLocation,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 struct KeesshSettings {
     auto_open_recursion_enable: bool,
     strict_crypto_enabled: bool,
     suppress_crypto_warnings: bool,
     vault_location_preset: Option<String>,
-
 }
 
 impl Default for KeesshSettings {
@@ -113,7 +116,7 @@ impl KeesshSettings {
             }
         }
         if env::var("KEESSH_STRICT_CRYPTO").is_ok() {
-            if ! is_falsey(env::var("KEESSH_STRICT_CRYPTO").unwrap()) {
+            if !is_falsey(env::var("KEESSH_STRICT_CRYPTO").unwrap()) {
                 s.strict_crypto_enabled = true;
             }
         }
@@ -125,7 +128,7 @@ impl KeesshSettings {
                 s.vault_location_preset = Some(env::var("KEESSH_VAULT").unwrap());
             }
         }
-    s
+        s
     }
 }
 
@@ -167,9 +170,17 @@ impl SshKey {
 fn is_falsey(s: String) -> bool {
     // For reading env vars, can't get truthy/falsey from clap, so do this.
     // TODO probably a better way to do this, maybe with a library
-    if i32::from_str(&s).is_ok() { if i32::from_str(&s).unwrap() == 0 {return true}}
-    if s.to_ascii_lowercase() == "false" {return true}
-    if s.to_ascii_lowercase() == "no" {return true}
+    if i32::from_str(&s).is_ok() {
+        if i32::from_str(&s).unwrap() == 0 {
+            return true;
+        }
+    }
+    if s.to_ascii_lowercase() == "false" {
+        return true;
+    }
+    if s.to_ascii_lowercase() == "no" {
+        return true;
+    }
     false
 }
 
@@ -190,16 +201,14 @@ fn get_auto_open_dbs(db: &Database) -> Result<HashMap<PathBuf, DatabaseKey>> {
     // I doubt any actual problems will come of this, AutoOpen is rare and anyone using it
     // recursively should already know what can happen.
 
-    let mut new_dbs:HashMap<PathBuf, DatabaseKey> = HashMap::new();
+    let mut new_dbs: HashMap<PathBuf, DatabaseKey> = HashMap::new();
     let mut duplicate_dbs: Vec<PathBuf> = Vec::new();
     if db.root.get(&["AutoOpen"]).is_none() {
         return Ok(new_dbs);
     }
     let auto_open_group_children = match db.root.get(&["AutoOpen"]).unwrap() {
-        NodeRef::Entry(e) => { return Ok(new_dbs) } // If AutoOpen isn't a group, return.
-        NodeRef::Group(g) => {
-            &g.children
-        }
+        NodeRef::Entry(_) => return Ok(new_dbs), // If AutoOpen isn't a group, return.
+        NodeRef::Group(g) => &g.children,
     };
 
     // This section should prevent the same database opening multiple times.
@@ -302,8 +311,8 @@ fn get_encoding(bytes: &Vec<u8>) -> FileEncoding {
 
     // IMPORTANT GUARD ++++++++++++++++++++
     if bytes.len() < 4 {
-        return Binary;
-    } // Prevents BOM check from panicking
+        return Binary; // Prevents BOM check from panicking
+    }
     // IMPORTANT GUARD ++++++++++++++++++++
 
     // The above guard should make this unwrap() never panic.
@@ -399,7 +408,7 @@ fn get_encoding(bytes: &Vec<u8>) -> FileEncoding {
 
 fn get_sub_db(child: NodeRef) -> Result<HashMap<PathBuf, DatabaseKey>> {
     match child {
-        NodeRef::Group(_) => {Err(anyhow!("child is group."))}
+        NodeRef::Group(_) => Err(anyhow!("child is group.")),
         NodeRef::Entry(e) => {
             let pb = PathBuf::from(e.get_url().unwrap()).canonicalize()?;
             let dbk = DatabaseKey::new().with_password(e.get_password().unwrap());
@@ -415,23 +424,26 @@ fn key_check_old_crypto(ssh_key: &SshKey) -> Result<()> {
     // Checks SSH key for crypto considered deprecated/insecure so user can be warned.
     // This is an Open SSF Best Practice: see https://bestpractices.dev
     let min_rsa_key_length: usize = 2048;
-        if ssh_key.public_key.algorithm().is_dsa() {
-            return Err(anyhow!(
+    if ssh_key.public_key.algorithm().is_dsa() {
+        return Err(anyhow!(
             "DSA keys are deprecated and considered insecure. Please consider upgrading."
-        ))}
-        if ssh_key.public_key.algorithm().is_rsa() {
-            // Gets Modulus of public key. The length of the modulus is the same as the key itself.
-            // This should never panic because the match statement ensures key is RSA.
-            let key_mod: &Mpint = &ssh_key.public_key.key_data().rsa().unwrap().n;
+        ));
+    }
+    if ssh_key.public_key.algorithm().is_rsa() {
+        // Gets Modulus of public key. The length of the modulus is the same as the key itself.
+        // This should never panic because the match statement ensures key is RSA.
+        let key_mod: &Mpint = &ssh_key.public_key.key_data().rsa().unwrap().n;
 
-            // This shouldn't conceivably fail because TryFrom<Mpint> for BigUint
-            // is implemented for ssh_key::Mpint
-            let key_mod_len: usize = BigUint::try_from(key_mod)?.bits();
-            if key_mod_len < min_rsa_key_length {
-                 return Err(anyhow!("RSA keys smaller than 2048 bits are deprecated ".to_owned()
-                     + "and considered insecure. Please consider upgrading."))
-            };
-        }
+        // This shouldn't conceivably fail because TryFrom<Mpint> for BigUint
+        // is implemented for ssh_key::Mpint
+        let key_mod_len: usize = BigUint::try_from(key_mod)?.bits();
+        if key_mod_len < min_rsa_key_length {
+            return Err(anyhow!(
+                "RSA keys smaller than 2048 bits are deprecated ".to_owned()
+                    + "and considered insecure. Please consider upgrading."
+            ));
+        };
+    }
     Ok(())
 }
 
@@ -449,7 +461,7 @@ fn parse_keeagent_settings(settings_file: &Vec<u8>) -> Result<KeeagentSettings> 
     // It's possible that KeeAgent.settings can be encoded differently, but I haven't seen it.
 
     if get_encoding(&settings_file) != UTF_16_LE {
-        return Err(anyhow!("unknown or unsupported encoding."));
+        return Err(anyhow!("Unknown or unsupported encoding"));
     }
 
     let mut new_settings = settings_file.clone();
@@ -459,7 +471,7 @@ fn parse_keeagent_settings(settings_file: &Vec<u8>) -> Result<KeeagentSettings> 
     Ok(settings)
 }
 
-fn main () {
+fn main() {
     // Parse CLI arguments.
     let cli = Cli::parse();
 
@@ -476,12 +488,11 @@ fn main () {
         keesh_settings.suppress_crypto_warnings = true;
     }
 
-    let db_path = PathBuf::new();
-    if cli.vault_path.is_some() {
-        let db_path = cli.vault_path.unwrap();
+    let db_path = if cli.vault_path.is_some() {
+        cli.vault_path.unwrap()
     } else {
-        let db_path = PathBuf::from(keesh_settings.vault_location_preset.unwrap());
-    }
+        PathBuf::from(keesh_settings.vault_location_preset.unwrap())
+    };
     let db_password =
         rpassword::prompt_password(format!("password for {:?}: ", db_path).as_str()).unwrap();
     let key = DatabaseKey::new().with_password(&db_password);
@@ -492,10 +503,13 @@ fn main () {
     for i in ssh_keys {
         let crypto_check = key_check_old_crypto(&i);
         if crypto_check.is_err() {
-            println!("{}",crypto_check.unwrap_err());
+            println!("{}", crypto_check.unwrap_err());
             if keesh_settings.strict_crypto_enabled {
-                println!("not loading key due to strict-crypto being set.");
-                continue
+                println!(
+                    "not loading the following key due to strict-crypto being set.\n{}",
+                    i.public_key.to_openssh().unwrap()
+                );
+                continue;
             }
         }
         client
