@@ -64,7 +64,7 @@ struct Cli {
     vault_path: Option<PathBuf>,
 }
 
-// TODO change Strings to &str so this can be const for tests
+// TODO Consider not using Strings here
 #[derive(Deserialize, Debug, Eq, PartialEq)]
 #[allow(non_snake_case)]
 struct KASetLocation {
@@ -430,6 +430,7 @@ fn key_check_old_crypto(ssh_key: &SshKey) -> Result<()> {
         ));
     }
     if ssh_key.public_key.algorithm().is_rsa() {
+        // TODO when ssh_keygen crate goes 0.7.0, do this in less hacky way.
         // Gets Modulus of public key. The length of the modulus is the same as the key itself.
         // This should never panic because the match statement ensures key is RSA.
         let key_mod: &Mpint = &ssh_key.public_key.key_data().rsa().unwrap().n;
