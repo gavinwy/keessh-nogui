@@ -599,6 +599,10 @@ mod tests {
         // * utf8.settings
         // * windows-1252.settings NOT TESTED
 
+        // Short file
+        assert_eq!(get_encoding(&vec![0x2D, 0x2D, 0x2D]), Binary);
+
+        // Normal settings files in weird encodings.
         assert_eq!(get_encoding(&files["utf-16.settings"]), UTF_16_LE);
         assert_eq!(get_encoding(&files["utf16-be-bom.settings"]), UTF_16_BE);
         assert_eq!(get_encoding(&files["utf16-le-bom.settings"]), UTF_16_LE);
@@ -606,6 +610,8 @@ mod tests {
         assert_eq!(get_encoding(&files["utf-32-be.settings"]), UTF_32_BE);
         assert_eq!(get_encoding(&files["utf-32-le.settings"]), UTF_32_LE);
         assert_eq!(get_encoding(&files["utf8.settings"]), UTF_8);
+
+        assert_eq!(get_encoding(&vec![0x4a; 20]), Binary);
     }
 
     #[test]
