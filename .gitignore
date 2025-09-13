@@ -8,6 +8,9 @@ target/*
 !target/patch/*
 !target/patch/**/*
 
+# But not the patch's own target dir.
+target/patch/keepass-0.8.3/target
+
 # Coverage reports don't need to be stored.
 coverage
 
