@@ -1,24 +1,9 @@
-[package]
-name = "keessh"
-version = "0.1.0"
-edition = "2024"
-publish = false
-
-[package.metadata.patch]
-crates = ["keepass"]
+[workspace]
+resolver = "2"
+members = [
+    "keessh",
+    "xtask",
+]
 
 [patch.crates-io]
 keepass = { path="./target/patch/keepass-0.8.3" }
-
-[dependencies]
-anyhow = "1.0.99"
-keepass = "0.8.3"
-serde = "1.0.219"
-serde-xml-rs = "0.8.1"
-serde_derive = "1.0.219"
-rpassword = "=7.4.0"
-ssh-agent-client-rs = "1.1.1"
-ssh-key = { version = "=0.6.7",features = ["alloc", "rsa"] }
-num-traits = "0.2.19"
-clap = { version ="4.5.46", features = ["cargo", "derive"] }
-num-bigint-dig = "0.8.4"

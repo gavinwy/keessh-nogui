@@ -526,7 +526,7 @@ mod tests {
 
     fn get_settings_encoding_test_files() -> HashMap<String, Vec<u8>> {
         let key = DatabaseKey::new().with_password("password");
-        let path = PathBuf::from("tests/wrong_settings_encoding.kdbx");
+        let path = PathBuf::from("../tests/wrong_settings_encoding.kdbx");
         let db = open_kpdb(key, path).unwrap();
         let entry: Entry = match db.root.children.first().unwrap().clone() {
             Node::Group(_) => unimplemented!("Test db, we know its contents and can assume"),
@@ -544,7 +544,7 @@ mod tests {
 
     fn get_privkey_encoding_test_files() -> HashMap<String, Vec<u8>> {
         let key = DatabaseKey::new().with_password("password");
-        let path = PathBuf::from("tests/wrong_privkey_encoding.kdbx");
+        let path = PathBuf::from("wrong_privkey_encoding.kdbx");
         let db = open_kpdb(key, path).unwrap();
         let entry: Entry = match db.root.children.first().unwrap().clone() {
             Node::Group(_) => unimplemented!("Test db, we know its contents and can assume"),
@@ -562,8 +562,9 @@ mod tests {
 
     #[test]
     fn open_blank_kdbx() {
+        println!("{:?}", env::current_dir().unwrap());
         let key = DatabaseKey::new().with_password("password");
-        let path = PathBuf::from("tests/test0.kdbx");
+        let path = PathBuf::from("../tests/test0.kdbx");
         open_kpdb(key, path).unwrap();
     }
 
@@ -571,7 +572,7 @@ mod tests {
     #[should_panic(expected = "Incorrect key")]
     fn open_kdbx_wrong_password() {
         let key = DatabaseKey::new().with_password("WRONG");
-        let path = PathBuf::from("tests/test0.kdbx");
+        let path = PathBuf::from("../tests/test0.kdbx");
         open_kpdb(key, path).unwrap();
     }
 
@@ -579,7 +580,7 @@ mod tests {
     #[should_panic(expected = "Invalid KDBX identifier")]
     fn open_kdbx_not_a_kdbx() {
         let key = DatabaseKey::new().with_password("password");
-        let path = PathBuf::from("README.md");
+        let path = PathBuf::from("../README.md");
         open_kpdb(key, path).unwrap();
     }
 
@@ -648,7 +649,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "DSA keys are deprecated and considered insecure. Please consider upgrading.")]
     fn test_crypto_check_dsa()  {
-        let key_str = std::fs::read_to_string("tests/test_dsa").unwrap();
+        let key_str = std::fs::read_to_string("../tests/test_dsa").unwrap();
 
         let private_key = PrivateKey::from_openssh(key_str).unwrap();
         let public_key = private_key.public_key().clone();
@@ -682,7 +683,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "RSA keys smaller than 2048 bits are deprecated and considered insecure. Please consider upgrading.")]
     fn test_crypto_check_rsa_2047() {
-        let key_str = std::fs::read_to_string("tests/test_2047_rsa").unwrap();
+        let key_str = std::fs::read_to_string("../tests/test_2047_rsa").unwrap();
 
         let private_key = PrivateKey::from_openssh(key_str).unwrap();
         let public_key = private_key.public_key().clone();
@@ -715,7 +716,7 @@ mod tests {
 
     #[test]
     fn test_crypto_check_rsa_2048() {
-        let key_str = std::fs::read_to_string("tests/test_2048_rsa").unwrap();
+        let key_str = std::fs::read_to_string("../tests/test_2048_rsa").unwrap();
 
         let private_key = PrivateKey::from_openssh(key_str).unwrap();
         let public_key = private_key.public_key().clone();
@@ -748,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_crypto_check_rsa_2049() {
-        let key_str = std::fs::read_to_string("tests/test_2049_rsa").unwrap();
+        let key_str = std::fs::read_to_string("../tests/test_2049_rsa").unwrap();
 
         let private_key = PrivateKey::from_openssh(key_str).unwrap();
         let public_key = private_key.public_key().clone();
